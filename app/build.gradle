@@ -1,0 +1,18 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+android {
+    namespace 'com.hrauto'
+    compileSdk 34
+    defaultConfig {
+        applicationId "com.hrauto"
+        minSdk 24
+        targetSdk 27
+        versionCode 1
+        versionName "1.0"
+    }
+    lintOptions { abortOnError false; checkReleaseBuilds false }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
+    kotlinOptions { jvmTarget = '1.8' }
+}
