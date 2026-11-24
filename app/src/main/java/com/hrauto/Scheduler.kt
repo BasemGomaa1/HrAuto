@@ -10,32 +10,54 @@ import java.util.Calendar
 
 object Scheduler {
     // ===== إعدادات تقدر تعدلها =====
-    const val APP_LABEL = "Login Hr"            // اسم التطبيق زي ما بيظهر في الموبايل
-    const val START_HOUR = 4                    // الساعة (24 ساعة)
-    const val START_MIN = 0
-    val SKIP_DAYS = setOf(Calendar.FRIDAY)      // أيام ما يشتغلش فيها (احذفها لو عايزه كل يوم)
+    const val APP_LABEL = "Login Hr"                 // اسم التطبيق زي ما بيظهر في الموبايل
+    val SKIP_DAYS: Set<Int> = emptySet()             // مثال: setOf(Calendar.FRIDAY) لاستثناء الجمعة
     // ================================
 
     var wakeLock: PowerManager.WakeLock? = null
 
-    fun scheduleNext(ctx: Context) {
-        val cal = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, START_HOUR)
-            set(Calendar.MINUTE, START_MIN)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-            if (timeInMillis <= System.currentTimeMillis()) add(Calendar.DAY_OF_YEAR, 1)
-        }
-        while (cal.get(Calendar.DAY_OF_WEEK) in SKIP_DAYS) cal.add(Calendar.DAY_OF_YEAR, 1)
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("hrauto", Context.MODE_PRIVATE)
 
+    fun isEnabled(ctx: Context) = prefs(ctx).getBoolean("enabled", false)
+    fun setEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean("enabled", v).apply()
+
+    // الأوقات بتتخزن كدقايق من بداية اليوم (4:00 = 240)
+    fun getTimes(ctx: Context): List<Int> =
+        (prefs(ctx).getString("times", "240") ?: "")
+            .split(",").mapNotNull { it.toIntOrNull() }.distinct().sorted()
+
+    fun saveTimes(ctx: Context, list: List<Int>) =
+        prefs(ctx).edit().putString("times", list.distinct().sorted().joinToString(",")).apply()
+
+    fun nextRunMillis(ctx: Context): Long? {
+        val now = System.currentTimeMillis()
+        return getTimes(ctx).map { m ->
+            Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, m / 60)
+                set(Calendar.MINUTE, m % 60)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+                if (timeInMillis <= now) add(Calendar.DAY_OF_YEAR, 1)
+                while (get(Calendar.DAY_OF_WEEK) in SKIP_DAYS) add(Calendar.DAY_OF_YEAR, 1)
+            }.timeInMillis
+        }.minOrNull()
+    }
+
+    private fun alarmIntent(ctx: Context) = PendingIntent.getBroadcast(
+        ctx, 1, Intent(ctx, AlarmReceiver::class.java), PendingIntent.FLAG_UPDATE_CURRENT
+    )
+
+    // بيلغي أي منبه قديم، ولو الجدولة شغالة بيضبط المنبه على أقرب وقت جاي
+    fun scheduleNext(ctx: Context) {
         val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pi = PendingIntent.getBroadcast(
-            ctx, 1, Intent(ctx, AlarmReceiver::class.java), PendingIntent.FLAG_UPDATE_CURRENT
-        )
+        val pi = alarmIntent(ctx)
+        am.cancel(pi)
+        if (!isEnabled(ctx)) return
+        val t = nextRunMillis(ctx) ?: return
         if (Build.VERSION.SDK_INT >= 23)
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pi)
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t, pi)
         else
-            am.setExact(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pi)
+            am.setExact(AlarmManager.RTC_WAKEUP, t, pi)
     }
 
     fun findLaunchIntent(ctx: Context): Intent? {

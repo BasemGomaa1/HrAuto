@@ -6,7 +6,8 @@ import android.content.Intent
 
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
-        Scheduler.scheduleNext(ctx)   // جدولة اليوم التالي
+        if (!Scheduler.isEnabled(ctx)) return
+        Scheduler.scheduleNext(ctx)   // جدولة الوقت اللي بعده
         Scheduler.runNow(ctx)
     }
 }
