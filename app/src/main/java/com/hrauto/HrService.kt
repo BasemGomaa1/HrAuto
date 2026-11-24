@@ -47,9 +47,13 @@ class HrService : AccessibilityService() {
     private var typeWait = 0
     private var typeOptWait = 0
     private var typeTries = 0
+    private var lastMsg = ""
+    private var dismissCount = 0
 
     private fun prefs() = getSharedPreferences("hrauto", Context.MODE_PRIVATE)
-    private fun status(s: String) = prefs().edit().putString("status", s).apply()
+    private fun status(s: String) = prefs().edit().putString(
+        "status", if (lastMsg.isEmpty()) s else "$s | آخر رسالة ظهرت: $lastMsg"
+    ).apply()
 
     override fun onServiceConnected() { instance = this }
     override fun onDestroy() { instance = null; super.onDestroy() }
@@ -59,6 +63,14 @@ class HrService : AccessibilityService() {
         if (!running || e == null) return
         val s = norm(SUCCESS_TEXT)
         if (e.text.any { norm(it).contains(s) }) success = true
+        // سجّل نص أي Toast أو Dialog يظهر
+        val isToast = e.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED
+        val isDialog = e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            e.className?.toString()?.contains("Dialog") == true
+        if (isToast || isDialog) {
+            val msg = e.text.joinToString(" ") { it?.toString() ?: "" }.trim()
+            if (msg.isNotEmpty()) lastMsg = msg.take(120)
+        }
     }
 
     private fun resetFlags() {
@@ -69,6 +81,7 @@ class HrService : AccessibilityService() {
     fun startRun(t: String) {
         handler.removeCallbacksAndMessages(null)
         type = t; running = true; attempt = 1; regClicks = 0; success = false
+        lastMsg = ""; dismissCount = 0
         resetFlags()
         status("بدأ تشغيل (${Scheduler.label(t)})، بستنى التطبيق يفتح")
         handler.postDelayed(tick, 6000)
@@ -79,7 +92,11 @@ class HrService : AccessibilityService() {
             if (!running) return
             if (success || hasText(norm(SUCCESS_TEXT))) {
                 status("نجح: ظهرت رسالة التسجيل (ضغطات تسجيل: $regClicks)")
-                finish(); return
+                clickNodes(dismissPred())          // لو الرسالة ظهرت كنافذة، يدوس موافق
+                running = false
+                handler.removeCallbacksAndMessages(null)
+                handler.postDelayed({ finish() }, 1500)
+                return
             }
             var acted = false
             var delay = TICK_MS
@@ -95,6 +112,12 @@ class HrService : AccessibilityService() {
                     status("نافذة الموقع: بدوس OK")
                     if (clickNodes(exact("ok"))) acted = true
                 }
+            } else if (dismissCount < 15 && find(dismissPred()).isNotEmpty()) {
+                // ===== أي رسالة فيها زر موافق: دوس عليه =====
+                val btn = find(dismissPred()).first()
+                lastMsg = dialogText(btn).ifEmpty { lastMsg }
+                status("ظهرت رسالة، بدوس موافق")
+                if (clickNodes(dismissPred())) { dismissCount++; acted = true }
             } else if (typeOpened && !typeClicked && !typeDone) {
                 // ===== قايمة نوع السجل مفتوحة: اختار حضور/انصراف بلمسة =====
                 val cnt = find(keyIs(optionKey)).size
@@ -165,6 +188,26 @@ class HrService : AccessibilityService() {
         Scheduler.wakeLock?.let { if (it.isHeld) it.release() }
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         if (dpm.isAdminActive(ComponentName(this, AdminReceiver::class.java))) dpm.lockNow()
+    }
+
+    // ===== أزرار إغلاق الرسائل =====
+    private fun dismissPred(): (AccessibilityNodeInfo) -> Boolean {
+        val set = listOf("موافق", "ok", "حسنا", "تأكيد").map { norm(it) }
+        return { norm(it.text) in set }
+    }
+
+    private fun dialogText(n: AccessibilityNodeInfo): String {
+        var r = n
+        while (true) { r = r.parent ?: break }
+        val l = mutableListOf<String>()
+        gatherTexts(r, l)
+        return l.joinToString(" | ").take(150)
+    }
+
+    private fun gatherTexts(n: AccessibilityNodeInfo, out: MutableList<String>) {
+        val t = n.text?.toString()?.trim()
+        if (!t.isNullOrEmpty()) out.add(t)
+        for (i in 0 until n.childCount) n.getChild(i)?.let { gatherTexts(it, out) }
     }
 
     // ===== أدوات البحث في الشاشة =====
