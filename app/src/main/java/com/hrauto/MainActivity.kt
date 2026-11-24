@@ -1,9 +1,13 @@
 package com.hrauto
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.TimePickerDialog
 import android.app.admin.DevicePolicyManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -24,6 +28,11 @@ class MainActivity : Activity() {
 
     private lateinit var timesBox: LinearLayout
     private lateinit var nextTv: TextView
+    private lateinit var svcTv: TextView
+    private lateinit var statusTv: TextView
+    private lateinit var dumpTv: TextView
+
+    private fun prefs() = getSharedPreferences("hrauto", Context.MODE_PRIVATE)
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -50,9 +59,7 @@ class MainActivity : Activity() {
                 Uri.parse("package:$packageName")))
         }
 
-        root.addView(TextView(this).apply {
-            text = "\nالجدولة:"; textSize = 18f
-        })
+        root.addView(TextView(this).apply { text = "\nالجدولة:"; textSize = 18f })
         root.addView(Switch(this).apply {
             text = "تشغيل الجدولة  "
             textSize = 18f
@@ -72,46 +79,89 @@ class MainActivity : Activity() {
         btn("+ إضافة وقت") {
             val c = Calendar.getInstance()
             TimePickerDialog(this, TimePickerDialog.OnTimeSetListener { _, h, m ->
-                Scheduler.saveTimes(this, Scheduler.getTimes(this) + (h * 60 + m))
-                Scheduler.scheduleNext(this)
-                refresh()
+                AlertDialog.Builder(this)
+                    .setTitle("نوع التسجيل")
+                    .setItems(arrayOf("حضور", "انصراف")) { _, which ->
+                        val type = if (which == 0) Scheduler.IN else Scheduler.OUT
+                        val min = h * 60 + m
+                        Scheduler.saveSlots(this,
+                            Scheduler.getSlots(this).filter { it.minutes != min } + Slot(min, type))
+                        Scheduler.scheduleNext(this)
+                        refresh()
+                    }.show()
             }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), true).show()
         }
 
-        btn("تجربة الآن") {
+        fun test(type: String) {
             if (Scheduler.findLaunchIntent(this) == null)
                 Toast.makeText(this, "مش لاقي تطبيق اسمه ${Scheduler.APP_LABEL}", Toast.LENGTH_LONG).show()
             else if (HrService.instance == null)
                 Toast.makeText(this, "فعّل Accessibility الأول", Toast.LENGTH_LONG).show()
-            else Scheduler.runNow(this)
+            else Scheduler.runNow(this, type)
         }
+        btn("تجربة الآن: حضور") { test(Scheduler.IN) }
+        btn("تجربة الآن: انصراف") { test(Scheduler.OUT) }
+
+        // ===== الفحص =====
+        root.addView(TextView(this).apply { text = "\nالفحص:"; textSize = 18f })
+        svcTv = TextView(this).apply { textSize = 16f }
+        root.addView(svcTv)
+        statusTv = TextView(this).apply { textSize = 14f; setPadding(0, 8, 0, 8) }
+        root.addView(statusTv)
+
+        btn("فحص شاشة Login Hr (بعد 10 ثواني)") {
+            val svc = HrService.instance
+            if (svc == null) {
+                Toast.makeText(this, "فعّل Accessibility الأول", Toast.LENGTH_LONG).show()
+            } else {
+                prefs().edit().remove("dump").apply()
+                Scheduler.findLaunchIntent(this)?.let { startActivity(it) }
+                svc.dumpScreenDelayed(10000)
+                Toast.makeText(this, "وصّل للشاشة المطلوبة، وبعد 10 ثواني ارجع لـ HR Auto", Toast.LENGTH_LONG).show()
+            }
+        }
+        btn("نسخ نتيجة الفحص") {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("dump", prefs().getString("dump", "") ?: ""))
+            Toast.makeText(this, "اتنسخت", Toast.LENGTH_SHORT).show()
+        }
+        dumpTv = TextView(this).apply { textSize = 12f; setTextIsSelectable(true) }
+        root.addView(dumpTv)
 
         setContentView(ScrollView(this).apply { addView(root) })
         refresh()
     }
 
+    override fun onResume() { super.onResume(); refresh() }
+
     private fun fmt(m: Int) = "%02d:%02d".format(m / 60, m % 60)
 
     private fun refresh() {
         timesBox.removeAllViews()
-        for (m in Scheduler.getTimes(this)) {
+        for (s in Scheduler.getSlots(this)) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             row.addView(TextView(this).apply {
-                text = fmt(m); textSize = 22f
+                text = "${fmt(s.minutes)}  —  ${Scheduler.label(s.type)}"; textSize = 20f
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(Button(this).apply {
                 text = "حذف"
                 setOnClickListener {
-                    Scheduler.saveTimes(this@MainActivity, Scheduler.getTimes(this@MainActivity) - m)
+                    Scheduler.saveSlots(this@MainActivity,
+                        Scheduler.getSlots(this@MainActivity).filter { it.minutes != s.minutes })
                     Scheduler.scheduleNext(this@MainActivity)
                     refresh()
                 }
             })
             timesBox.addView(row)
         }
-        val next = Scheduler.nextRunMillis(this)
+        val next = Scheduler.nextRun(this)
         nextTv.text = if (Scheduler.isEnabled(this) && next != null)
-            "التشغيل القادم: " + SimpleDateFormat("EEE yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(next))
+            "التشغيل القادم: " + SimpleDateFormat("EEE yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(next.first)) +
+                " (${Scheduler.label(next.second.type)})"
         else "الجدولة متوقفة"
+
+        svcTv.text = "Accessibility: " + if (HrService.instance != null) "شغالة ✅" else "مش شغالة ❌"
+        statusTv.text = "آخر حالة: " + (prefs().getString("status", "-") ?: "-")
+        dumpTv.text = prefs().getString("dump", "") ?: ""
     }
 }
