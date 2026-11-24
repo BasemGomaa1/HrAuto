@@ -1,9 +1,12 @@
 package com.hrauto
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
+import android.graphics.Path
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
@@ -15,19 +18,18 @@ class HrService : AccessibilityService() {
         var instance: HrService? = null
         const val SUCCESS_TEXT = "تم التسجيل بنجاح"
         const val LOCATION_TEXT = "وكيل دمياط"
-        const val MAX_ATTEMPTS = 3          // عدد مرات إعادة الدخول من الأول
-        const val MAX_REG_CLICKS = 5        // أقصى عدد ضغطات على زر "تسجيل" كلها
-        const val IDLE_LIMIT = 10           // دورات من غير أي تقدم قبل إعادة المحاولة
+        const val MAX_ATTEMPTS = 3
+        const val MAX_REG_CLICKS = 5
+        const val IDLE_LIMIT = 10
         const val TICK_MS = 2500L
 
-        // توحيد الحروف: أ إ آ ← ا ، ى ← ي ، ة ← ه ، وشيل التشكيل والمسافات الزايدة
         fun norm(s: CharSequence?): String = (s?.toString() ?: "")
             .replace(Regex("[\\u064B-\\u0652\\u0640]"), "")
             .replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
             .replace('ى', 'ي').replace('ة', 'ه')
             .replace(Regex("\\s+"), " ").trim().lowercase()
 
-        // الحروف العربية بس (بيشيل الأرقام والشرطة والمسافات): "1-إنصراف" ← "انصراف"
+        // الحروف العربية بس: "2-إنصراف" ← "انصراف"
         fun key(s: CharSequence?): String = norm(s).replace(Regex("[^\\u0621-\\u064A]"), "")
     }
 
@@ -40,9 +42,11 @@ class HrService : AccessibilityService() {
     private var success = false
     private var locRowClicked = false
     private var typeOpened = false
+    private var typeClicked = false
     private var typeDone = false
     private var typeWait = 0
     private var typeOptWait = 0
+    private var typeTries = 0
 
     private fun prefs() = getSharedPreferences("hrauto", Context.MODE_PRIVATE)
     private fun status(s: String) = prefs().edit().putString("status", s).apply()
@@ -58,8 +62,8 @@ class HrService : AccessibilityService() {
     }
 
     private fun resetFlags() {
-        idle = 0; locRowClicked = false; typeOpened = false; typeDone = false
-        typeWait = 0; typeOptWait = 0
+        idle = 0; locRowClicked = false; typeOpened = false; typeClicked = false
+        typeDone = false; typeWait = 0; typeOptWait = 0; typeTries = 0
     }
 
     fun startRun(t: String) {
@@ -91,21 +95,33 @@ class HrService : AccessibilityService() {
                     status("نافذة الموقع: بدوس OK")
                     if (clickNodes(exact("ok"))) acted = true
                 }
+            } else if (typeOpened && !typeClicked && !typeDone) {
+                // ===== قايمة نوع السجل مفتوحة: اختار حضور/انصراف بلمسة =====
+                val cnt = find(keyIs(optionKey)).size
+                status("بختار ${Scheduler.label(type)} من القايمة (لقيت $cnt عنصر)")
+                if (clickNodes(keyIs(optionKey), forceTap = true)) { typeClicked = true; acted = true }
+                else if (++typeOptWait > 3) { typeOpened = false; typeOptWait = 0 }
+            } else if (typeClicked && !typeDone) {
+                // ===== تحقق إن الاختيار اتسجل =====
+                if (find(exact("اختر نوع السجل")).isEmpty()) {
+                    typeDone = true; acted = true
+                    status("اتحدد نوع السجل")
+                } else if (++typeTries > 3) {
+                    status("نوع السجل ما اتحددش بعد 3 محاولات")
+                    retry(); return
+                } else {
+                    typeOpened = false; typeClicked = false; acted = true
+                    status("نوع السجل لسه ما اتحددش، بعيد المحاولة")
+                }
             } else if (find(exact("الموقع")).isNotEmpty()) {
                 // ===== شاشة الفورم =====
                 if (find(keyIs(LOCATION_TEXT)).isEmpty()) {
                     status("بفتح اختيار الموقع")
                     if (clickNodes(exact("اختر"))) acted = true
                 } else if (!typeDone) {
-                    if (!typeOpened) {
-                        status("بفتح قايمة نوع السجل")
-                        if (clickNodes(exact("اختر نوع السجل"))) { typeOpened = true; typeOptWait = 0; acted = true }
-                        else if (++typeWait > 3) { typeDone = true; acted = true }
-                    } else {
-                        status("بختار ${Scheduler.label(type)} من نوع السجل")
-                        if (clickNodes(keyIs(optionKey))) { typeDone = true; acted = true }
-                        else if (++typeOptWait > 3) { typeOpened = false; typeOptWait = 0 }
-                    }
+                    status("بفتح قايمة نوع السجل")
+                    if (clickNodes(exact("اختر نوع السجل"))) { typeOpened = true; typeOptWait = 0; acted = true }
+                    else if (++typeWait > 3) { typeDone = true; acted = true }
                 } else {
                     if (regClicks >= MAX_REG_CLICKS) {
                         status("وقف: دست تسجيل $MAX_REG_CLICKS مرات ومظهرتش رسالة النجاح")
@@ -172,22 +188,47 @@ class HrService : AccessibilityService() {
     }
 
     private fun collect(n: AccessibilityNodeInfo, pred: (AccessibilityNodeInfo) -> Boolean,
-                        out: MutableList<AccessibilityNodeInfo>) {
-        if (n.isVisibleToUser && pred(n)) out.add(n)
-        for (i in 0 until n.childCount) n.getChild(i)?.let { collect(it, pred, out) }
+                        out: MutableList<AccessibilityNodeInfo>, visibleOnly: Boolean) {
+        if ((!visibleOnly || n.isVisibleToUser) && pred(n)) out.add(n)
+        for (i in 0 until n.childCount) n.getChild(i)?.let { collect(it, pred, out, visibleOnly) }
     }
 
-    private fun find(pred: (AccessibilityNodeInfo) -> Boolean): List<AccessibilityNodeInfo> {
+    private fun find(pred: (AccessibilityNodeInfo) -> Boolean, visibleOnly: Boolean = true): List<AccessibilityNodeInfo> {
         val out = mutableListOf<AccessibilityNodeInfo>()
-        for (r in allRoots()) collect(r, pred, out)
+        for (r in allRoots()) collect(r, pred, out, visibleOnly)
         return out
     }
 
-    private fun clickNodes(pred: (AccessibilityNodeInfo) -> Boolean): Boolean {
-        for (n in find(pred)) {
-            var c: AccessibilityNodeInfo? = n
-            while (c != null && !c.isClickable) c = c.parent
-            if (c != null && c.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+    // لمسة على منتصف العنصر (زي إصبع المستخدم)
+    private fun tap(n: AccessibilityNodeInfo): Boolean {
+        val r = Rect()
+        n.getBoundsInScreen(r)
+        if (r.isEmpty) return false
+        val p = Path().apply { moveTo(r.exactCenterX(), r.exactCenterY()) }
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(p, 0, 80)).build()
+        return dispatchGesture(g, null, null)
+    }
+
+    private fun clickNodes(pred: (AccessibilityNodeInfo) -> Boolean, forceTap: Boolean = false): Boolean {
+        var nodes = find(pred)
+        if (nodes.isEmpty()) nodes = find(pred, visibleOnly = false)
+        for (n in nodes) {
+            if (!forceTap) {
+                val nb = Rect(); n.getBoundsInScreen(nb)
+                var c: AccessibilityNodeInfo? = n
+                var depth = 0
+                while (c != null && depth < 4) {
+                    if (c.isClickable) {
+                        val cb = Rect(); c.getBoundsInScreen(cb)
+                        val sane = nb.isEmpty || cb.height() <= nb.height() * 5
+                        if (sane && c.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                        break
+                    }
+                    c = c.parent; depth++
+                }
+            }
+            if (tap(n)) return true
         }
         return false
     }
@@ -203,7 +244,6 @@ class HrService : AccessibilityService() {
 
     private fun hasText(t: String) = allRoots().any { containsText(it, t) }
 
-    // هل صف "وكيل دمياط" في نافذة الموقع متعلّم صح أصلاً؟
     private fun alreadyChecked(): Boolean {
         val row = find(keyIs(LOCATION_TEXT)).firstOrNull() ?: return false
         var p = row.parent
@@ -238,10 +278,12 @@ class HrService : AccessibilityService() {
 
     private fun walk(n: AccessibilityNodeInfo, d: Int, sb: StringBuilder) {
         if (n.text != null || n.contentDescription != null || n.isClickable) {
+            val r = Rect(); n.getBoundsInScreen(r)
             sb.append("  ".repeat(d))
                 .append("[${n.className?.toString()?.substringAfterLast('.')}] ")
                 .append("text=\"${n.text}\" desc=\"${n.contentDescription}\" ")
-                .append("id=${n.viewIdResourceName} click=${n.isClickable} checked=${n.isChecked}\n")
+                .append("id=${n.viewIdResourceName} click=${n.isClickable} vis=${n.isVisibleToUser} ")
+                .append("bounds=${r.flattenToString()}\n")
         }
         for (i in 0 until n.childCount) n.getChild(i)?.let { walk(it, d + 1, sb) }
     }
