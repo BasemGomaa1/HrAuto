@@ -101,6 +101,16 @@ class MainActivity : Activity() {
         }
         btn("تجربة الآن: حضور") { test(Scheduler.IN) }
         btn("تجربة الآن: انصراف") { test(Scheduler.OUT) }
+        btn("⏹ إيقاف التشغيل الحالي") {
+            val svc = HrService.instance
+            if (svc == null || !svc.isRunning())
+                Toast.makeText(this, "مفيش تشغيل شغال دلوقتي", Toast.LENGTH_SHORT).show()
+            else {
+                svc.stopRun()
+                Toast.makeText(this, "اتوقف", Toast.LENGTH_SHORT).show()
+                refresh()
+            }
+        }
 
         // ===== الفحص =====
         root.addView(TextView(this).apply { text = "\nالفحص:"; textSize = 18f })
@@ -160,7 +170,9 @@ class MainActivity : Activity() {
                 " (${Scheduler.label(next.second.type)})"
         else "الجدولة متوقفة"
 
-        svcTv.text = "Accessibility: " + if (HrService.instance != null) "شغالة ✅" else "مش شغالة ❌"
+        val svc = HrService.instance
+        svcTv.text = "Accessibility: " + (if (svc != null) "شغالة ✅" else "مش شغالة ❌") +
+            (if (svc?.isRunning() == true) "\nالتشغيل: شغال الآن 🔄" else "\nالتشغيل: واقف")
         statusTv.text = "آخر حالة: " + (prefs().getString("status", "-") ?: "-")
         dumpTv.text = prefs().getString("dump", "") ?: ""
     }

@@ -5,6 +5,7 @@ import android.accessibilityservice.GestureDescription
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Handler
@@ -19,7 +20,7 @@ class HrService : AccessibilityService() {
         const val SUCCESS_TEXT = "تم التسجيل بنجاح"
         const val LOCATION_TEXT = "وكيل دمياط"
         const val MAX_ATTEMPTS = 1000
-        const val MAX_REG_CLICKS = 1000
+        const val CLICKS_PER_ROUND = 50       // بعد كده يقفل التطبيق ويفتحه من الأول
         const val MAX_RUN_MS = 30 * 60 * 1000L   // سقف زمني: بعد 30 دقيقة يقف ويقفل الشاشة
         const val IDLE_LIMIT = 10
         const val TICK_MS = 2500L
@@ -40,6 +41,7 @@ class HrService : AccessibilityService() {
     private var attempt = 1
     private var idle = 0
     private var regClicks = 0
+    private var roundClicks = 0
     private var success = false
     private var locRowClicked = false
     private var typeOpened = false
@@ -76,8 +78,18 @@ class HrService : AccessibilityService() {
     }
 
     private fun resetFlags() {
-        idle = 0; locRowClicked = false; typeOpened = false; typeClicked = false
+        idle = 0; roundClicks = 0; locRowClicked = false; typeOpened = false; typeClicked = false
         typeDone = false; typeWait = 0; typeOptWait = 0; typeTries = 0
+    }
+
+    fun isRunning() = running
+
+    // إيقاف التشغيل الحالي يدوياً (من زر الإيقاف في التطبيق)
+    fun stopRun() {
+        running = false
+        handler.removeCallbacksAndMessages(null)
+        Scheduler.wakeLock?.let { if (it.isHeld) it.release() }
+        status("اتوقف يدوياً")
     }
 
     fun startRun(t: String) {
@@ -152,12 +164,11 @@ class HrService : AccessibilityService() {
                     if (clickNodes(exact("اختر نوع السجل"))) { typeOpened = true; typeOptWait = 0; acted = true }
                     else if (++typeWait > 3) { typeDone = true; acted = true }
                 } else {
-                    if (regClicks >= MAX_REG_CLICKS) {
-                        status("وقف: دست تسجيل $MAX_REG_CLICKS مرات ومظهرتش رسالة النجاح")
-                        finish(); return
+                    if (roundClicks >= CLICKS_PER_ROUND) {
+                        restartApp(); return
                     }
                     if (clickNodes(exact("تسجيل"))) {
-                        regClicks++; acted = true; delay = 4000
+                        regClicks++; roundClicks++; acted = true; delay = 4000
                         status("دست تسجيل (مرة $regClicks) وبستنى رسالة النجاح")
                     }
                 }
@@ -174,6 +185,22 @@ class HrService : AccessibilityService() {
         }
     }
 
+    // بعد 50 ضغطة: اقفل التطبيق وافتحه من جديد وكمّل
+    private fun restartApp() {
+        status("دست $CLICKS_PER_ROUND مرة (الإجمالي $regClicks) من غير نجاح، بقفل التطبيق وأفتحه من جديد")
+        resetFlags()
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 700)
+        handler.postDelayed({ launchFresh() }, 2000)
+        handler.postDelayed(tick, 8000)
+    }
+
+    private fun launchFresh() {
+        Scheduler.findLaunchIntent(this)
+            ?.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
+            ?.let { startActivity(it) }
+    }
+
     private fun retry() {
         attempt++
         if (attempt > MAX_ATTEMPTS) {
@@ -184,7 +211,7 @@ class HrService : AccessibilityService() {
         status("بعيد المحاولة رقم $attempt")
         performGlobalAction(GLOBAL_ACTION_BACK)
         handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 700)
-        handler.postDelayed({ Scheduler.findLaunchIntent(this)?.let { startActivity(it) } }, 2000)
+        handler.postDelayed({ launchFresh() }, 2000)
         handler.postDelayed(tick, 7000)
     }
 
