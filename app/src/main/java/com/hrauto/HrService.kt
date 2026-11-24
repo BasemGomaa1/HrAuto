@@ -18,8 +18,9 @@ class HrService : AccessibilityService() {
         var instance: HrService? = null
         const val SUCCESS_TEXT = "تم التسجيل بنجاح"
         const val LOCATION_TEXT = "وكيل دمياط"
-        const val MAX_ATTEMPTS = 3
-        const val MAX_REG_CLICKS = 5
+        const val MAX_ATTEMPTS = 1000
+        const val MAX_REG_CLICKS = 1000
+        const val MAX_RUN_MS = 30 * 60 * 1000L   // سقف زمني: بعد 30 دقيقة يقف ويقفل الشاشة
         const val IDLE_LIMIT = 10
         const val TICK_MS = 2500L
 
@@ -47,6 +48,7 @@ class HrService : AccessibilityService() {
     private var typeWait = 0
     private var typeOptWait = 0
     private var typeTries = 0
+    private var startTime = 0L
     private var lastMsg = ""
     private var dismissCount = 0
 
@@ -81,7 +83,7 @@ class HrService : AccessibilityService() {
     fun startRun(t: String) {
         handler.removeCallbacksAndMessages(null)
         type = t; running = true; attempt = 1; regClicks = 0; success = false
-        lastMsg = ""; dismissCount = 0
+        lastMsg = ""; dismissCount = 0; startTime = System.currentTimeMillis()
         resetFlags()
         status("بدأ تشغيل (${Scheduler.label(t)})، بستنى التطبيق يفتح")
         handler.postDelayed(tick, 6000)
@@ -97,6 +99,10 @@ class HrService : AccessibilityService() {
                 handler.removeCallbacksAndMessages(null)
                 handler.postDelayed({ finish() }, 1500)
                 return
+            }
+            if (System.currentTimeMillis() - startTime > MAX_RUN_MS) {
+                status("وقف: عدّت 30 دقيقة ومظهرتش رسالة النجاح")
+                finish(); return
             }
             var acted = false
             var delay = TICK_MS

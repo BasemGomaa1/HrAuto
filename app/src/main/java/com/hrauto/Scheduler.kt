@@ -91,7 +91,7 @@ object Scheduler {
         wakeLock = pm.newWakeLock(
             PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
             "hrauto:wake"
-        ).also { it.acquire(5 * 60 * 1000L) }
+        ).also { it.acquire(35 * 60 * 1000L) }
 
         findLaunchIntent(ctx)?.let { ctx.startActivity(it) }
         val svc = HrService.instance
